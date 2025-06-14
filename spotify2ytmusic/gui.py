@@ -11,10 +11,15 @@ from tkinter import ttk, messagebox # Import messagebox
 from . import cli
 from . import backend
 from . import spotify_backup
+from .exceptions import (YTMAuthError, PlaylistLookupError, PlaylistCreationError,
+                       SongLookupError, SpotifyBackupError, OperationFailedError)
 from typing import Callable # Dict, Any are no longer used directly here for the moved functions
 
 # Import the refactored settings logic
 from .gui_utils import DEFAULT_SETTINGS_VALUES, parse_settings_data, prepare_settings_for_save
+# Import constants for search algorithms
+from .constants import (SEARCH_ALGO_EXACT, SEARCH_ALGO_EXTENDED, SEARCH_ALGO_APPROXIMATE,
+                        DEFAULT_SEARCH_ALGORITHM, SEARCH_ALGO_DISPLAY_NAMES)
 
 
 def create_label(parent: tk.Frame, text: str, **kwargs) -> tk.Label:
@@ -78,6 +83,10 @@ class Window:
         self.root.title("Spotify to YT Music")
         self.root.geometry("1280x720")
         self.root.config(background="#26242f")
+
+        # To store thread call status
+        self._thread_call_status = {"success": False, "error": None, "error_title": "Operation Failed"}
+
 
         style = ttk.Style()
         style.theme_use("default")
@@ -252,7 +261,10 @@ class Window:
             self.tab2,
             text="Start Spotify Backup",
             command=lambda: self.call_func(
-                func=spotify_backup.main, args=(), next_tab=self.tab3
+                func=spotify_backup.main,
+                args=(),
+                next_tab=self.tab3,
+                error_title="Spotify Backup Failed"
             ),
         ).pack(anchor=tk.CENTER, expand=True)
 
@@ -281,6 +293,7 @@ class Window:
                     self.var_algo.get(),
                 ),
                 next_tab=self.tab4,
+                error_title="Failed to Transfer Liked Songs"
             ),
         ).pack(anchor=tk.CENTER, expand=True)
 
@@ -299,10 +312,37 @@ class Window:
         create_button(
             self.tab4,
             text="List Spotify Playlists",
-            command=lambda: self.call_func(
-                func=cli.list_playlists, args=(), next_tab=self.tab5
-            ),
+            command=self.display_playlists # Updated command
+            # Old: command=lambda: self.call_func(
+            #    func=cli.list_playlists, args=(), next_tab=self.tab5, error_title="Failed to list playlists"
+            # ),
         ).pack(anchor=tk.CENTER, expand=True)
+
+    def display_playlists(self) -> None:
+        """Handles fetching and displaying playlists in the log."""
+        def do_list_playlists():
+            # This function will run in the thread via call_func
+            # It needs to return the data or store it for display_playlists to use
+            # For now, let's make it print directly, fitting the refactor of call_func
+            # to primarily manage execution and tab switching.
+            # If it were to return data, call_func's wrapper would need to store it.
+
+            # New backend function get_formatted_playlists raises exceptions on failure
+            spotify_list, ytmusic_list = backend.get_formatted_playlists()
+
+            # If successful, print to log (which is self.redirector)
+            # Ensure this is called from the main thread if it directly updates GUI state
+            # other than self.logs.insert, but print() is fine as it goes to redirector.
+            print("\n".join(spotify_list))
+            print("\n".join(ytmusic_list))
+
+        self.call_func(
+            func=do_list_playlists,
+            args=(),
+            next_tab=self.tab5, # Or current tab if preferred: self.tab4
+            error_title="Failed to List Playlists"
+        )
+
 
     def _create_tab5_copy_all_ui(self) -> None:
         """Creates the UI elements for Tab 5 (Copy all playlists).
@@ -323,6 +363,7 @@ class Window:
                 func=backend.copy_all_playlists,
                 args=(0.1, False, "utf-8", self.var_algo.get()),
                 next_tab=self.tab6,
+                error_title="Failed to Copy All Playlists"
             ),
         ).pack(anchor=tk.CENTER, expand=True)
 
@@ -390,6 +431,7 @@ class Window:
                 self.var_algo.get(),
             ),
             next_tab=self.tab6,  # Stay on this tab
+            error_title="Failed to Copy Specific Playlist"
         )
 
     def _create_tab7_settings_ui(self) -> None:
@@ -417,36 +459,26 @@ class Window:
         auto_scroll_check.pack(pady=5, fill=tk.X) # Fill horizontally
         # auto_scroll_check.select() # Default selection handled by _load_settings
 
-        self.var_algo = tk.IntVar()
-        # self.var_algo.set(0) # Default set by _load_settings
+        # Initialize tk.StringVar for algorithm selection, set default from constants
+        # This is already done correctly based on previous diffs.
+        self.var_algo = tk.StringVar(value=DEFAULT_SEARCH_ALGORITHM)
 
-        algo_label_text = "Song Matching Algorithm:"
-        self.algo_label = create_label(settings_frame, text=algo_label_text, anchor="w") # Add to frame
-        self.algo_label.pack(pady=(10,0), fill=tk.X) # Fill horizontally
+        algo_label_text = "Song Matching Algorithm:" # This label is static.
+        self.algo_label = create_label(settings_frame, text=algo_label_text, anchor="w")
+        self.algo_label.pack(pady=(10,0), fill=tk.X)
 
-        # Descriptions for each algorithm option
-        algo_descriptions = {
-            0: "Exact Match: Searches for songs with the exact same title and artist. (Fastest, Recommended)",
-            1: "Fuzzy Match: Uses fuzzy string matching to find similar song titles. (Slower, might find incorrect matches)",
-            2: "Fuzzy Match with Videos: Similar to Fuzzy Match, but also includes video results from YouTube Music. (Slowest, highest chance of incorrect matches)"
-        }
-
-        # Create Radiobuttons for algorithm selection for better UX
-        for val, desc_key in enumerate(algo_descriptions):
-            full_desc = algo_descriptions[desc_key]
+        # Create Radiobuttons for algorithm selection using constants
+        for algo_key_const, display_name in SEARCH_ALGO_DISPLAY_NAMES.items():
             rb = ttk.Radiobutton(
-                settings_frame, # Add to frame
-                text=full_desc,
+                settings_frame,
+                text=display_name,
                 variable=self.var_algo,
-                value=desc_key,
-                command=lambda: self.load_write_settings(1), # Action 1 = save
-                # style="TRadiobutton" # Requires style definition if custom needed
+                value=algo_key_const, # Use the constant itself (e.g., "exact") as the value
+                command=lambda: self.load_write_settings(1) # Action 1 = save
             )
-            rb.pack(anchor="w", pady=2, fill=tk.X) # Align left, fill horizontally
+            rb.pack(anchor="w", pady=2, fill=tk.X)
 
-
-        # Initial load of settings will set these correctly.
-        # self.load_write_settings(0) # Action 0 = load. This is called in __init__
+        # Initial load of settings will set these correctly via self.root.after in __init__
 
     def redirector(self, input_str: str = "") -> None:
         """
@@ -467,42 +499,57 @@ class Window:
         if self.var_scroll.get():
             self.logs.see(tk.END)
 
+    def _execute_function_in_thread(self, func: Callable, args: tuple, error_title: str) -> None:
+        """
+        Wrapper to execute a function in a thread and handle exceptions.
+        Updates self._thread_call_status with success/failure.
+        """
+        # Reset status for this call
+        self._thread_call_status = {"success": False, "error": None, "error_title": error_title}
+        try:
+            func(*args)
+            self._thread_call_status["success"] = True
+        except (YTMAuthError, PlaylistLookupError, PlaylistCreationError,
+                SongLookupError, SpotifyBackupError, OperationFailedError,
+                FileNotFoundError, ValueError, IOError) as e: # Catch specific and common errors
+            self._thread_call_status["error"] = e
+            print(f"Error during '{error_title}': {e}") # Log to GUI console
+        except Exception as e: # Catch any other unexpected errors
+            self._thread_call_status["error"] = e
+            print(f"An unexpected error occurred during '{error_title}': {e}")
+
+
     def _check_thread_status(self, thread: threading.Thread, next_tab: ttk.Frame) -> None:
         """
         Checks if the given thread is still running.
-
-        If the thread has completed, it switches to the next_tab.
-        Otherwise, it schedules itself to check again after a short delay.
-
-        Args:
-            thread (threading.Thread): The thread to monitor.
-            next_tab (ttk.Frame): The tab to switch to when the thread is done.
+        If completed, it handles UI updates based on self._thread_call_status.
+        Shows error messagebox if an error occurred, otherwise switches tab.
         """
         if thread.is_alive():
-            # Check again after 100ms
             self.root.after(100, lambda: self._check_thread_status(thread, next_tab))
         else:
-            self.tabControl.select(next_tab)
-            print() # Add a newline for better log readability
+            if self.root.winfo_exists(): # Check if GUI is still around
+                if self._thread_call_status.get("success"):
+                    self.tabControl.select(next_tab)
+                    print()  # Add a newline for better log readability
+                elif self._thread_call_status.get("error"):
+                    error_title = self._thread_call_status.get("error_title", "Operation Failed")
+                    error_message = str(self._thread_call_status["error"])
+                    self.root.after(0, lambda: messagebox.showerror(error_title, error_message))
+                # else: some unknown state or thread was cancelled before status set - do nothing.
 
-    def call_func(self, func: Callable, args: tuple, next_tab: ttk.Frame) -> None:
+
+    def call_func(self, func: Callable, args: tuple, next_tab: ttk.Frame, error_title: str = "Error") -> None:
         """
-        Calls the given function in a separate thread and switches to the
-        next tab when the function is done.
-
-        Uses a non-blocking approach to check thread status, keeping the GUI responsive.
-
-        Args:
-            func (Callable): The function to be called.
-            args (tuple): The arguments to be passed to the function.
-                          Pass an empty tuple if no arguments are needed.
-            next_tab (ttk.Frame): The tab to switch to when the function is done.
-                                  If no switch is needed, pass the current one.
+        Calls the given function in a separate thread.
+        Manages tab switching and error display via _check_thread_status
+        and self._thread_call_status.
         """
-        thread = threading.Thread(target=func, args=args)
+        # Pass error_title to the wrapper to be stored in self._thread_call_status
+        thread = threading.Thread(target=self._execute_function_in_thread, args=(func, args, error_title))
         thread.start()
-        # Start checking the thread status without blocking the GUI
         self._check_thread_status(thread, next_tab)
+
 
     def _execute_yt_login_thread(self, auto: bool) -> None:
         """
@@ -591,9 +638,64 @@ class Window:
                                    it will not attempt to open the oauth command
                                    if the file is missing.
         """
-        # Run the function in a separate thread
-        th = threading.Thread(target=self._execute_yt_login_thread, args=(auto,))
-        th.start()
+        # Run the function in a separate thread using the main call_func for consistency
+        # However, yt_login has specific logic about not opening console if auto=true and no file.
+        # For now, keep its original threading model but adapt error messages.
+        # This function is called by root.after, not directly by a button with call_func.
+        # A full refactor might integrate this into call_func as well.
+
+        # Simplified: If _execute_yt_login_thread raises YTMAuthError, it will be caught by its caller
+        # if it were using call_func. Since it's called directly, we handle its specific errors.
+        try:
+            if os.path.exists("oauth.json"):
+                print("File detected, auto login")
+            elif auto:
+                print("No file detected. Manual login required during non-auto run.")
+                return # Do not proceed with oauth popup if auto and no file
+            else:
+                print("File not detected, login required")
+                if os.name == "nt":
+                    try:
+                        process = subprocess.Popen(["ytmusicapi", "oauth"], creationflags=subprocess.CREATE_NEW_CONSOLE)
+                        process.communicate()
+                    except FileNotFoundError:
+                        raise YTMAuthError("Failed to run 'ytmusicapi oauth'. Is ytmusicapi installed and in PATH?")
+                    except Exception as e:
+                        raise YTMAuthError(f"Unexpected error during 'ytmusicapi oauth': {e}")
+                else: # Unix/Linux
+                    try:
+                        result = subprocess.run("python3 -m ytmusicapi oauth", shell=True, capture_output=True, text=True)
+                        if result.returncode != 0:
+                            raise YTMAuthError(f"Error during 'ytmusicapi oauth': {result.stderr or result.stdout}")
+                    except Exception as e:
+                        raise YTMAuthError(f"Error running 'ytmusicapi oauth': {e}")
+
+            # If successful or file existed
+            if self.root.winfo_exists():
+                 self.root.after(0, lambda: self.tabControl.select(self.tab2))
+                 self.root.after(0, print) # Newline
+        except YTMAuthError as e:
+            if self.root.winfo_exists():
+                self.root.after(0, lambda: messagebox.showerror("YT Music Login Failed", str(e)))
+        except Exception as e: # Catch any other unexpected error from this logic
+             if self.root.winfo_exists():
+                self.root.after(0, lambda: messagebox.showerror("YT Music Login Error", f"An unexpected error occurred: {e}"))
+
+
+    def yt_login(self, auto: bool = False) -> None:
+        """
+        Logs in to YT Music.
+        Uses its own threading for now, but calls _execute_yt_login_thread which raises errors.
+        The try-except is now inside _execute_yt_login_thread for errors it can handle directly.
+        The call from __init__ with root.after needs to be mindful of this.
+
+        Refined approach: The `self.root.after(1, lambda: self.yt_login(auto=True))`
+        in `__init__` will run `yt_login`. `yt_login` starts a thread for `_execute_yt_login_thread`.
+        `_execute_yt_login_thread` now has its own try-except for YTMAuthError and shows messagebox.
+        """
+        thread = threading.Thread(target=self._execute_yt_login_thread, args=(auto,))
+        thread.start()
+        # No call to _check_thread_status here as _execute_yt_login_thread handles its own UI outcome.
 
     def _load_settings(self) -> None:
         """Loads settings from the 'settings.json' file.
@@ -602,38 +704,37 @@ class Window:
         Updates the UI elements related to settings.
         """
         settings_file = "settings.json"
-        # texts dictionary for UI update, remains part of the UI logic
-        texts = {0: "Exact match", 1: "Fuzzy match", 2: "Fuzzy match with videos"}
-        processed_settings = DEFAULT_SETTINGS_VALUES.copy() # Start with defaults
+        # No need for the 'texts' dictionary here for algo_label anymore,
+        # as the display names are directly on radio buttons.
+        # The algo_label is now just a static "Song Matching Algorithm:"
+        # However, if you wanted to display the *currently selected* algorithm's name
+        # separately, you could update self.algo_label.config here.
+        # The self.algo_label is static ("Song Matching Algorithm:").
+        # The selected value is visually indicated by the selected radio button.
+
+        processed_settings = DEFAULT_SETTINGS_VALUES.copy() # This now uses algo_name (string)
 
         try:
             with open(settings_file, "r") as f:
                 file_content = f.read()
-            # Parse the content using the new helper function
+            # parse_settings_data handles backward compatibility for 'algo_number'
             processed_settings = parse_settings_data(file_content, DEFAULT_SETTINGS_VALUES.copy())
         except FileNotFoundError:
-            # File not found, try to create it with default settings
             print(f"Settings file '{settings_file}' not found. Attempting to create with default settings.")
             try:
                 with open(settings_file, "w") as f:
-                    json.dump(DEFAULT_SETTINGS_VALUES, f)
+                    json.dump(DEFAULT_SETTINGS_VALUES, f) # Save defaults (with string algo_name)
                 print(f"Settings file '{settings_file}' created with default settings.")
-                # processed_settings remains as DEFAULT_SETTINGS_VALUES
             except IOError as e:
                 messagebox.showwarning(
                     "Settings Warning",
                     f"Could not create settings file '{settings_file}': {e}\nDefault settings will be used.",
-                    parent=self.root # Assuming self.root is accessible; otherwise, this needs context
+                    parent=self.root
                 )
-        # Note: parse_settings_data handles json.JSONDecodeError by returning defaults,
-        # so no specific messagebox call for it here unless parse_settings_data re-raises or returns a specific status.
-        # For now, if parse_settings_data prints a warning, that's the indication.
 
-        # Update Tkinter variables and UI elements
-        self.var_scroll.set(processed_settings["auto_scroll"])
-        self.var_algo.set(processed_settings["algo_number"])
+        self.var_scroll.set(processed_settings.get("auto_scroll", True))
+        self.var_algo.set(processed_settings.get("algo_name", DEFAULT_SEARCH_ALGORITHM)) # Ensure var_algo gets a string
 
-        self.algo_label.config(text=f"Algorithm: {texts[self.var_algo.get()]}")
         self.root.update()
 
     def _save_settings(self) -> None:
@@ -642,12 +743,10 @@ class Window:
         Reads the current values from the UI elements and writes them to the file.
         """
         settings_file = "settings.json"
-        # texts dictionary for UI update, remains part of the UI logic
-        texts = {0: "Exact match", 1: "Fuzzy match", 2: "Fuzzy match with videos"}
 
-        # Prepare settings data using the new helper function
         settings_to_save = prepare_settings_for_save(
-            self.var_scroll.get(), self.var_algo.get()
+            self.var_scroll.get(),
+            self.var_algo.get() # This is now a string
         )
 
         try:
@@ -657,11 +756,10 @@ class Window:
             messagebox.showerror(
                 "Settings Error",
                 f"Error saving settings to '{settings_file}': {e}",
-                parent=self.root # Assuming self.root is accessible
+                parent=self.root
             )
 
-        # Update UI
-        self.algo_label.config(text=f"Algorithm: {texts[self.var_algo.get()]}")
+        # self.algo_label is static. No update needed here based on selection.
         self.root.update()
 
     def load_write_settings(self, action: int) -> None:

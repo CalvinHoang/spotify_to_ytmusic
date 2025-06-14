@@ -5,6 +5,7 @@ from argparse import ArgumentParser
 import pprint
 
 from . import backend
+from .constants import SEARCH_ALGORITHM_CHOICES, DEFAULT_SEARCH_ALGORITHM
 
 
 def list_liked_albums():
@@ -17,23 +18,15 @@ def list_liked_albums():
 
 def list_playlists():
     """
-    List the playlists on Spotify and YTMusic
+    List the playlists on Spotify (from backup) and YTMusic.
     """
-    yt = backend.get_ytmusic()
-
-    spotify_pls = backend.load_playlists_json()
-
-    #  Liked music
-    print("== Spotify")
-    for src_pl in spotify_pls["playlists"]:
-        print(
-            f"{src_pl.get('id')} - {src_pl['name']:50} ({len(src_pl['tracks'])} tracks)"
-        )
-
-    print()
-    print("== YTMusic")
-    for pl in yt.get_library_playlists(limit=5000):
-        print(f"{pl['playlistId']} - {pl['title']:40} ({pl.get('count', '?')} tracks)")
+    try:
+        spotify_formatted, ytmusic_formatted = backend.get_formatted_playlists()
+        print("\n".join(spotify_formatted))
+        print("\n".join(ytmusic_formatted))
+    except Exception as e: # Catch any exception from backend and print nicely for CLI
+        print(f"Error listing playlists: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 def create_playlist():
@@ -83,9 +76,10 @@ def search():
         )
         parser.add_argument(
             "--algo",
-            type=int,
-            default=0,
-            help="Algorithm to use for search (0 = exact, 1 = extended, 2 = approximate)",
+            type=str,
+            default=DEFAULT_SEARCH_ALGORITHM,
+            choices=SEARCH_ALGORITHM_CHOICES,
+            help=f"Algorithm to use for search. Options: {', '.join(SEARCH_ALGORITHM_CHOICES)}. Default: {DEFAULT_SEARCH_ALGORITHM}.",
         )
         return parser.parse_args()
 
@@ -134,9 +128,10 @@ def load_liked_albums():
         )
         parser.add_argument(
             "--algo",
-            type=int,
-            default=0,
-            help="Algorithm to use for search (0 = exact, 1 = extended, 2 = approximate)",
+            type=str,
+            default=DEFAULT_SEARCH_ALGORITHM,
+            choices=SEARCH_ALGORITHM_CHOICES,
+            help=f"Algorithm to use for search. Options: {', '.join(SEARCH_ALGORITHM_CHOICES)}. Default: {DEFAULT_SEARCH_ALGORITHM}.",
         )
 
         return parser.parse_args()
@@ -181,9 +176,10 @@ def load_liked():
         )
         parser.add_argument(
             "--algo",
-            type=int,
-            default=0,
-            help="Algorithm to use for search (0 = exact, 1 = extended, 2 = approximate)",
+            type=str,
+            default=DEFAULT_SEARCH_ALGORITHM,
+            choices=SEARCH_ALGORITHM_CHOICES,
+            help=f"Algorithm to use for search. Options: {', '.join(SEARCH_ALGORITHM_CHOICES)}. Default: {DEFAULT_SEARCH_ALGORITHM}.",
         )
         parser.add_argument(
             "--reverse-playlist",
@@ -244,9 +240,10 @@ def copy_playlist():
         )
         parser.add_argument(
             "--algo",
-            type=int,
-            default=0,
-            help="Algorithm to use for search (0 = exact, 1 = extended, 2 = approximate)",
+            type=str,
+            default=DEFAULT_SEARCH_ALGORITHM,
+            choices=SEARCH_ALGORITHM_CHOICES,
+            help=f"Algorithm to use for search. Options: {', '.join(SEARCH_ALGORITHM_CHOICES)}. Default: {DEFAULT_SEARCH_ALGORITHM}.",
         )
         parser.add_argument(
             "--no-reverse-playlist",
@@ -269,6 +266,7 @@ def copy_playlist():
         track_sleep=args.track_sleep,
         dry_run=args.dry_run,
         spotify_playlists_encoding=args.spotify_playlists_encoding,
+        yt_search_algo=args.algo, # Pass the algo string
         reverse_playlist=not args.no_reverse_playlist,
         privacy_status=args.privacy,
     )
@@ -299,9 +297,10 @@ def copy_all_playlists():
         )
         parser.add_argument(
             "--algo",
-            type=int,
-            default=0,
-            help="Algorithm to use for search (0 = exact, 1 = extended, 2 = approximate)",
+            type=str,
+            default=DEFAULT_SEARCH_ALGORITHM,
+            choices=SEARCH_ALGORITHM_CHOICES,
+            help=f"Algorithm to use for search. Options: {', '.join(SEARCH_ALGORITHM_CHOICES)}. Default: {DEFAULT_SEARCH_ALGORITHM}.",
         )
         parser.add_argument(
             "--no-reverse-playlist",
@@ -322,6 +321,7 @@ def copy_all_playlists():
         track_sleep=args.track_sleep,
         dry_run=args.dry_run,
         spotify_playlists_encoding=args.spotify_playlists_encoding,
+        yt_search_algo=args.algo, # Pass the algo string
         reverse_playlist=not args.no_reverse_playlist,
         privacy_status=args.privacy,
     )

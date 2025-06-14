@@ -11,6 +11,7 @@ import re
 import sys
 import time
 import urllib.error
+from .exceptions import SpotifyBackupError
 import urllib.parse
 import urllib.request
 import webbrowser
@@ -32,9 +33,9 @@ class SpotifyAPI:
                 req = self._create_request(url)
                 return self._read_response(req)
             except Exception as err:
-                print(f"Error fetching URL {url}: {err}")
+                print(f"Error fetching URL {url}: {err}. Retrying in 2 seconds...")
                 time.sleep(2)
-        sys.exit("Failed to fetch data from Spotify API after retries.")
+        raise SpotifyBackupError("Failed to fetch data from Spotify API after multiple retries.")
 
     def list(self, url, params={}):
         """Fetch paginated resources and return as a combined list."""

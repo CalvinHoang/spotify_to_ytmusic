@@ -122,6 +122,7 @@ if the application was installed, which takes the form of: `s2yt_load_liked`
 
 If not fully installed, you can replace the "s2yt\_" with "python -m spotify2ytmusic", for
 example: `s2yt_load_liked` becomes `python -m spotify2ytmusic load_liked` (adjust for Windows/Linux python command if necessary).
+Many commands accept an `--algo` option for song searching; this option now accepts string values: 'exact', 'extended', or 'approximate'.
 
 #### Login to YTMusic (for CLI)
 For command-line usage, `ytmusicapi` requires an `oauth.json`. If you run a CLI command that needs authentication and `oauth.json` is missing or invalid, `ytmusicapi` will typically print instructions on how to perform the OAuth setup. This usually involves running `ytmusicapi oauth` in your terminal.

@@ -7,8 +7,10 @@ import time
 import re
 
 from ytmusicapi import YTMusic
-from typing import Optional, Union, Iterator, Dict, List
+from typing import Optional, Union, Iterator, Dict, List, Tuple
 from collections import namedtuple
+from .exceptions import YTMAuthError, PlaylistCreationError, SongLookupError, PlaylistLookupError
+from .constants import SEARCH_ALGO_EXACT, SEARCH_ALGO_EXTENDED, SEARCH_ALGO_APPROXIMATE, DEFAULT_SEARCH_ALGORITHM
 from dataclasses import dataclass, field
 
 
@@ -20,17 +22,15 @@ def get_ytmusic() -> YTMusic:
     @@@
     """
     if not os.path.exists("oauth.json"):
-        print("ERROR: No file 'oauth.json' exists in the current directory.")
-        print("       Have you logged in to YTMusic?  Run 'ytmusicapi oauth' to login")
-        sys.exit(1)
+        raise YTMAuthError("ERROR: No file 'oauth.json' exists in the current directory. "
+                           "Have you logged in to YTMusic? Run 'ytmusicapi oauth' to login.")
 
     try:
         return YTMusic("oauth.json")
     except json.decoder.JSONDecodeError as e:
-        print(f"ERROR: JSON Decode error while trying start YTMusic: {e}")
-        print("       This typically means a problem with a 'oauth.json' file.")
-        print("       Have you logged in to YTMusic?  Run 'ytmusicapi oauth' to login")
-        sys.exit(1)
+        raise YTMAuthError(f"ERROR: JSON Decode error while trying to start YTMusic: {e}. "
+                           "This typically means a problem with the 'oauth.json' file. "
+                           "Have you logged in to YTMusic? Run 'ytmusicapi oauth' to login.")
 
 
 def _ytmusic_create_playlist(
@@ -62,15 +62,14 @@ def _ytmusic_create_playlist(
                 time.sleep(exception_sleep)
                 exception_sleep *= 2
 
-        return {
-            "s2yt error": 'ERROR: Could not create playlist "{title}" after multiple retries'
-        }
+        # If loop finishes without returning, it means all retries failed
+        raise PlaylistCreationError(f'Could not create playlist "{title}" after multiple retries.')
 
     id = _create(yt, title, description, privacy_status)
-    #  create_playlist returns a dict if there was an error
-    if isinstance(id, dict):
-        print(f"ERROR: Failed to create playlist (name: {title}): {id}")
-        sys.exit(1)
+    # _create now raises PlaylistCreationError on failure, so no dict check needed here.
+    # However, the original _create returned a dict on error, if that behavior is kept,
+    # the check for dict is still needed.
+    # Assuming _create is modified to raise PlaylistCreationError as per instructions for this refactor.
 
     time.sleep(1)  # seems to be needed to avoid missing playlist ID error
 
@@ -145,7 +144,7 @@ def iter_spotify_playlist(
                 return src_pl
             if src_pl_id is not None and str(src_pl.get("id")) == src_pl_id:
                 return src_pl
-        raise ValueError(f"Could not find Spotify playlist {src_pl_id}")
+        raise PlaylistLookupError(f"Could not find Spotify playlist with ID: {src_pl_id if src_pl_id else 'Liked Songs'}")
 
     src_pl = find_spotify_playlist(spotify_pls, src_pl_id)
     src_pl_name = src_pl["name"]
@@ -202,6 +201,8 @@ def get_playlist_id_by_name(yt: YTMusic, title: str) -> Optional[str]:
         )
         print("you have the latest version of that library.")
         print("=" * 60)
+        # Re-raise as a more specific error if appropriate, or let it propagate if it's truly an API issue.
+        # For now, let it propagate as it's an external library issue.
         raise
 
     for pl in playlists:
@@ -223,7 +224,7 @@ def lookup_song(
     track_name: str,
     artist_name: str,
     album_name,
-    yt_search_algo: int,
+    yt_search_algo: str = DEFAULT_SEARCH_ALGORITHM, # Changed type to str and added default
     details: Optional[ResearchDetails] = None,
 ) -> dict:
     """Look up a song on YTMusic
@@ -244,7 +245,7 @@ def lookup_song(
         `track_name` (str): The name of the researched track
         `artist_name` (str): The name of the researched track's artist
         `album_name` (str): The name of the researched track's album
-        `yt_search_algo` (int): 0 for exact matching, 1 for extended matching (search past 1st result), 2 for approximate matching (search in videos)
+        `yt_search_algo` (str): Search algorithm ('exact', 'extended', 'approximate').
         `details` (ResearchDetails): If specified, more information about the search and the response will be populated for use by the caller.
 
     Raises:
@@ -272,27 +273,27 @@ def lookup_song(
         details.suggestions = yt.get_search_suggestions(query=query)
     songs = yt.search(query=query, filter="songs")
 
-    match yt_search_algo:
-        case 0:
-            if details:
-                details.songs = songs
-            return songs[0]
+    if not songs: # Handle case where search returns no songs
+        raise SongLookupError(f"No songs found for query: {query}")
 
-        case 1:
-            for song in songs:
-                if (
-                    song["title"] == track_name
-                    and song["artists"][0]["name"] == artist_name
-                    and song["album"]["name"] == album_name
-                ):
-                    return song
-                # print(f"SONG: {song['videoId']} - {song['title']} - {song['artists'][0]['name']} - {song['album']['name']}")
+    if yt_search_algo == SEARCH_ALGO_EXACT:
+        if details:
+            details.songs = songs
+        return songs[0] # Return the first result for exact match
 
-            raise ValueError(
-                f"Did not find {track_name} by {artist_name} from {album_name}"
-            )
+    elif yt_search_algo == SEARCH_ALGO_EXTENDED:
+        for song in songs:
+            if (
+                song["title"] == track_name
+                and song["artists"][0]["name"] == artist_name
+                and song["album"]["name"] == album_name
+            ):
+                return song
+        raise SongLookupError(
+            f"Extended match not found for '{track_name}' by {artist_name} from album '{album_name}'."
+        )
 
-        case 2:
+    elif yt_search_algo == SEARCH_ALGO_APPROXIMATE:
             #  This would need to do fuzzy matching
             for song in songs:
                 # Remove everything in brackets in the song title
@@ -338,8 +339,8 @@ def lookup_song(
                             return new_song
                     else:
                         # Basically we only get here if the song isn't present anywhere on YouTube
-                        raise ValueError(
-                            f"Did not find {track_name} by {artist_name} from {album_name}"
+                        raise SongLookupError(
+                            f"Approximate match not found for '{track_name}' by {artist_name} from album '{album_name}' after video search."
                         )
                 else:
                     return songs[0]
@@ -350,7 +351,7 @@ def copier(
     dst_pl_id: Optional[str] = None,
     dry_run: bool = False,
     track_sleep: float = 0.1,
-    yt_search_algo: int = 0,
+    yt_search_algo: str = DEFAULT_SEARCH_ALGORITHM, # Changed type and default
     *,
     yt: Optional[YTMusic] = None,
 ):
@@ -363,13 +364,9 @@ def copier(
     if dst_pl_id is not None:
         try:
             yt_pl = yt.get_playlist(playlistId=dst_pl_id)
-        except Exception as e:
-            print(f"ERROR: Unable to find YTMusic playlist {dst_pl_id}: {e}")
-            print(
-                "       Make sure the YTMusic playlist ID is correct, it should be something like "
-            )
-            print("      'PL_DhcdsaJ7echjfdsaJFhdsWUd73HJFca'")
-            sys.exit(1)
+        except Exception as e: # This could be a network error or invalid ID
+            raise PlaylistLookupError(f"ERROR: Unable to find YTMusic playlist {dst_pl_id}: {e}. "
+                                      "Make sure the YTMusic playlist ID is correct (e.g., 'PL...').")
         print(f"== Youtube Playlist: {yt_pl['title']}")
 
     tracks_added_set = set()
@@ -435,7 +432,7 @@ def copy_playlist(
     spotify_playlists_encoding: str = "utf-8",
     dry_run: bool = False,
     track_sleep: float = 0.1,
-    yt_search_algo: int = 0,
+    yt_search_algo: str = DEFAULT_SEARCH_ALGORITHM, # Changed type and default
     reverse_playlist: bool = True,
     privacy_status: str = "PRIVATE",
 ):
@@ -443,7 +440,7 @@ def copy_playlist(
     Copy a Spotify playlist to a YTMusic playlist
     @@@
     """
-    print("Using search algo n°: ", yt_search_algo)
+    print("Using search algorithm: ", yt_search_algo)
     yt = get_ytmusic()
     pl_name: str = ""
 
@@ -468,10 +465,12 @@ def copy_playlist(
             privacy_status=privacy_status,
         )
 
-        #  create_playlist returns a dict if there was an error
-        if isinstance(ytmusic_playlist_id, dict):
-            print(f"ERROR: Failed to create playlist: {ytmusic_playlist_id}")
-            sys.exit(1)
+        # _ytmusic_create_playlist now raises PlaylistCreationError on failure.
+        # The old check `isinstance(ytmusic_playlist_id, dict)` is no longer needed
+        # if _ytmusic_create_playlist is fully refactored to raise exceptions.
+        # Assuming it is, this sys.exit(1) is removed.
+        # If _ytmusic_create_playlist still returns a dict on some errors, that's an issue.
+        # For this refactor, assume it raises PlaylistCreationError.
         print(f"NOTE: Created playlist '{pl_name}' with ID: {ytmusic_playlist_id}")
 
     copier(
@@ -492,7 +491,7 @@ def copy_all_playlists(
     track_sleep: float = 0.1,
     dry_run: bool = False,
     spotify_playlists_encoding: str = "utf-8",
-    yt_search_algo: int = 0,
+    yt_search_algo: str = DEFAULT_SEARCH_ALGORITHM, # Changed type and default
     reverse_playlist: bool = True,
     privacy_status: str = "PRIVATE",
 ):
@@ -517,10 +516,8 @@ def copy_all_playlists(
                 yt, title=pl_name, description=pl_name, privacy_status=privacy_status
             )
 
-            #  create_playlist returns a dict if there was an error
-            if isinstance(dst_pl_id, dict):
-                print(f"ERROR: Failed to create playlist: {dst_pl_id}")
-                sys.exit(1)
+            # Similar to above, assuming _ytmusic_create_playlist raises PlaylistCreationError.
+            # The old check `isinstance(dst_pl_id, dict)` is removed.
             print(f"NOTE: Created playlist '{pl_name}' with ID: {dst_pl_id}")
 
         copier(
@@ -533,7 +530,61 @@ def copy_all_playlists(
             dry_run,
             track_sleep,
             yt_search_algo,
+            yt=yt, # Pass the existing yt instance
         )
         print("\nPlaylist done!\n")
 
     print("All done!")
+
+
+# --- Functions for decoupling list_playlists ---
+
+def _format_spotify_playlist_item(pl: Dict) -> str:
+    """Helper to format a Spotify playlist item for display."""
+    return f"{pl['id']} {pl['name']} ({len(pl['tracks'])} tracks)" # Changed to len()
+
+def _format_ytmusic_playlist_item(pl: Dict) -> str:
+    """Helper to format a YouTube Music playlist item for display."""
+    track_count = pl.get('count', 'N/A') # count might be missing for some playlists
+    return f"{pl['playlistId']} {pl['title']} ({track_count} tracks)"
+
+def get_formatted_playlists() -> Tuple[List[str], List[str]]:
+    """
+    Fetches and formats Spotify and YouTube Music playlists.
+
+    Returns:
+        A tuple containing two lists of strings:
+        - Formatted Spotify playlists.
+        - Formatted YouTube Music playlists.
+    Raises:
+        YTMAuthError: If YouTube Music authentication fails.
+        PlaylistLookupError: If there's an issue fetching playlists.
+        FileNotFoundError: If playlists.json is not found.
+    """
+    # Spotify playlists from local backup
+    try:
+        spotify_pls_data = load_playlists_json() # Assumes 'playlists.json'
+        formatted_spotify_playlists = ["== Spotify Playlists:"]
+        for pl in spotify_pls_data["playlists"]:
+            formatted_spotify_playlists.append(_format_spotify_playlist_item(pl))
+    except FileNotFoundError:
+        raise FileNotFoundError("Error: 'playlists.json' not found. Please run Spotify backup first.")
+    except Exception as e:
+        raise PlaylistLookupError(f"Error loading or parsing Spotify playlists from json: {e}")
+
+    # YouTube Music playlists via API
+    try:
+        yt = get_ytmusic() # Can raise YTMAuthError
+        yt_pls_data = yt.get_library_playlists(limit=5000) # Can raise other API errors
+        formatted_ytmusic_playlists = ["\n== YTMusic Playlists:"]
+        for pl in yt_pls_data:
+            formatted_ytmusic_playlists.append(_format_ytmusic_playlist_item(pl))
+    except YTMAuthError: # Let YTMAuthError from get_ytmusic() propagate
+        raise
+    except KeyError as e: # Specific issue from ytmusicapi, as previously handled
+        print(f"Warning: ytmusicapi encountered a KeyError while fetching playlists: {e}. Some playlists might be missing.")
+        raise PlaylistLookupError(f"ytmusicapi encountered a KeyError: {e}. This may indicate an issue with the ytmusicapi library or your account data.")
+    except Exception as e: # For other unexpected errors during YTMusic fetch
+        raise PlaylistLookupError(f"An unexpected error occurred while fetching YouTube Music playlists: {e}")
+
+    return formatted_spotify_playlists, formatted_ytmusic_playlists
