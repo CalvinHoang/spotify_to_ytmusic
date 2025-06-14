@@ -11,7 +11,10 @@ from tkinter import ttk, messagebox # Import messagebox
 from . import cli
 from . import backend
 from . import spotify_backup
-from typing import Callable
+from typing import Callable # Dict, Any are no longer used directly here for the moved functions
+
+# Import the refactored settings logic
+from .gui_utils import DEFAULT_SETTINGS_VALUES, parse_settings_data, prepare_settings_for_save
 
 
 def create_label(parent: tk.Frame, text: str, **kwargs) -> tk.Label:
@@ -599,34 +602,36 @@ class Window:
         Updates the UI elements related to settings.
         """
         settings_file = "settings.json"
-        default_settings = {"auto_scroll": True, "algo_number": 0}
+        # texts dictionary for UI update, remains part of the UI logic
         texts = {0: "Exact match", 1: "Fuzzy match", 2: "Fuzzy match with videos"}
+        processed_settings = DEFAULT_SETTINGS_VALUES.copy() # Start with defaults
 
         try:
             with open(settings_file, "r") as f:
-                settings = json.load(f)
+                file_content = f.read()
+            # Parse the content using the new helper function
+            processed_settings = parse_settings_data(file_content, DEFAULT_SETTINGS_VALUES.copy())
         except FileNotFoundError:
-            settings = default_settings
+            # File not found, try to create it with default settings
+            print(f"Settings file '{settings_file}' not found. Attempting to create with default settings.")
             try:
                 with open(settings_file, "w") as f:
-                    json.dump(default_settings, f)
-                print(f"Settings file '{settings_file}' not found. Created with default settings.")
+                    json.dump(DEFAULT_SETTINGS_VALUES, f)
+                print(f"Settings file '{settings_file}' created with default settings.")
+                # processed_settings remains as DEFAULT_SETTINGS_VALUES
             except IOError as e:
                 messagebox.showwarning(
                     "Settings Warning",
                     f"Could not create settings file '{settings_file}': {e}\nDefault settings will be used.",
-                    parent=self.root
+                    parent=self.root # Assuming self.root is accessible; otherwise, this needs context
                 )
-        except json.JSONDecodeError as e:
-            messagebox.showwarning(
-                "Settings Warning",
-                f"Error decoding settings file '{settings_file}': {e}\nDefault settings will be used.",
-                parent=self.root
-            )
-            settings = default_settings
+        # Note: parse_settings_data handles json.JSONDecodeError by returning defaults,
+        # so no specific messagebox call for it here unless parse_settings_data re-raises or returns a specific status.
+        # For now, if parse_settings_data prints a warning, that's the indication.
 
-        self.var_scroll.set(settings.get("auto_scroll", default_settings["auto_scroll"]))
-        self.var_algo.set(settings.get("algo_number", default_settings["algo_number"]))
+        # Update Tkinter variables and UI elements
+        self.var_scroll.set(processed_settings["auto_scroll"])
+        self.var_algo.set(processed_settings["algo_number"])
 
         self.algo_label.config(text=f"Algorithm: {texts[self.var_algo.get()]}")
         self.root.update()
@@ -637,21 +642,25 @@ class Window:
         Reads the current values from the UI elements and writes them to the file.
         """
         settings_file = "settings.json"
+        # texts dictionary for UI update, remains part of the UI logic
         texts = {0: "Exact match", 1: "Fuzzy match", 2: "Fuzzy match with videos"}
-        settings = {
-            "auto_scroll": self.var_scroll.get(),
-            "algo_number": self.var_algo.get(),
-        }
+
+        # Prepare settings data using the new helper function
+        settings_to_save = prepare_settings_for_save(
+            self.var_scroll.get(), self.var_algo.get()
+        )
+
         try:
             with open(settings_file, "w") as f:
-                json.dump(settings, f)
+                json.dump(settings_to_save, f)
         except IOError as e:
             messagebox.showerror(
                 "Settings Error",
                 f"Error saving settings to '{settings_file}': {e}",
-                parent=self.root
+                parent=self.root # Assuming self.root is accessible
             )
 
+        # Update UI
         self.algo_label.config(text=f"Algorithm: {texts[self.var_algo.get()]}")
         self.root.update()
 

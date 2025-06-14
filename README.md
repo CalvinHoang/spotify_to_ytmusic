@@ -113,6 +113,8 @@ The GUI is organized into several tabs, each corresponding to a step in the migr
 
 ### Command Line Usage
 
+Note: The following command-line instructions are optional and intended for advanced users or specific scripting scenarios. All primary functionalities of this application are available through the Graphical User Interface (GUI), which is the recommended method for most users.
+
 (The command-line usage section remains largely the same but ensure consistency with any backend changes if those were also part of the scope. For this task, focusing on GUI updates in README.)
 
 **NOTE**: There are two possible ways to run these commands, one is via standalone commands
@@ -164,6 +166,23 @@ The function first searches for albums by the given artist name on YTMusic.
   Try playing music in the browser on Youtube Music while you are loading the playlists,
   this has been reported to keep the session from timing out.
 ... (rest of the section) ...
+
+---
+
+### Testing
+
+This section provides an overview of the testing approach for the application.
+
+#### GUI Testing
+Due to environmental limitations with `tkinter` (the GUI toolkit used) in some automated or headless environments, comprehensive interactive GUI testing was not always feasible.
+
+To address this and ensure core logic is testable:
+*   The settings management logic within the GUI was refactored into a separate, pure Python module: `spotify2ytmusic/gui_utils.py`.
+*   This `gui_utils.py` module has a dedicated suite of unit tests located in `tests/test_gui_utils.py`. These tests cover functionalities such as parsing settings from JSON, handling malformed or incomplete data, applying default settings, and preparing settings data for saving. These tests currently pass, ensuring the robustness of this non-visual part of the GUI's logic.
+*   The core visual components and event handling within `spotify2ytmusic/gui.py` (which directly depend on `tkinter`) are not currently covered by automated tests due to the aforementioned environmental limitations. Manual testing is recommended for these aspects.
+
+#### Backend/Core Logic Testing
+Tests for the backend music synchronization logic (e.g., in `backend.py`, `spotify_backup.py`, and command-line interface scripts) are handled separately and aim to cover the core functionalities of song and playlist transfers.
 
 ---
 
